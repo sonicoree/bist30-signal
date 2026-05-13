@@ -60,7 +60,22 @@ class TechnicalSignal:
     macd_hist: float
     close: float
     atr: float
-    prev_close: float = 0.0      # Önceki gün kapanışı (günlük değişim için)
+    prev_close: float = 0.0
+    # EMA seviyeleri
+    ema9:   float = 0.0
+    ema21:  float = 0.0
+    ema50:  float = 0.0
+    ema200: float = 0.0
+    # Bollinger Bands
+    bb_upper: float = 0.0
+    bb_lower: float = 0.0
+    bb_width: float = 0.0
+    # DI+/DI-
+    dip: float = 0.0
+    dim: float = 0.0
+    # Stochastic
+    stoch_k: float = 0.0
+    stoch_d: float = 0.0
     error: Optional[str] = None
 
 
@@ -503,4 +518,15 @@ def analyze_stock(
             ind.close_series.iloc[-2] if ind.close_series is not None
             and len(ind.close_series) >= 2 else 0.0
         ),
+        ema9=safe_float(ind.ema9),
+        ema21=safe_float(ind.ema21),
+        ema50=safe_float(ind.ema50),
+        ema200=safe_float(ind.ema200),
+        bb_upper=safe_float(ind.bb_upper),
+        bb_lower=safe_float(ind.bb_lower),
+        bb_width=safe_float(ind.bb_width),
+        dip=safe_float(ind.dip),
+        dim=safe_float(ind.dim),
+        stoch_k=safe_float(ind.stoch_k),
+        stoch_d=safe_float(ind.stoch_d),
     )
