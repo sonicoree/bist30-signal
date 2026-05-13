@@ -16,7 +16,7 @@ on:
         type: boolean
 
 env:
-  PYTHON_VERSION: '3.11'
+  PYTHON_VERSION: '3.12'
   TZ: 'Europe/Istanbul'
 
 jobs:
@@ -24,6 +24,9 @@ jobs:
     name: Sinyal Taraması
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
 
     steps:
       # ── Kaynak Kodunu Al ───────────────────────────────────────────────
