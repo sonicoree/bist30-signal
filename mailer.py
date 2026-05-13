@@ -1,532 +1,733 @@
 """
-mailer.py — BIST30 5-Günlük Swing Trading Mail Raporu
+mailer.py — BIST30 Swing Trading Mail Raporu v4
+Hero UI · 5-Günlük Trade Planı · Haber Akışı · Tam İndikatör Tablosu
 """
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import resend
 
-from config import MAIL_CONFIG, SIGNAL_CLASSES
+from config import MAIL_CONFIG
 from news_classifier import ClassifiedNews
 from scorer import CombinedSignal, rank_signals
 from utils import format_tl, logger, now_istanbul
 
-# ─── Palet ───────────────────────────────────────────────────────────────────
+# ─── Renk sistemi ─────────────────────────────────────────────────────────────
 
-C = {
-    "bg":      "#0a0e17",
-    "surface": "#111827",
-    "card":    "#131c2e",
-    "border":  "#1e2d45",
-    "dim":     "#2a3a52",
-    "text":    "#e2e8f0",
-    "sub":     "#94a3b8",
-    "muted":   "#4a6080",
-    "green":   "#22c55e",
-    "green2":  "#4ade80",
-    "red":     "#ef4444",
-    "yellow":  "#eab308",
-    "blue":    "#3b82f6",
-    "cyan":    "#06b6d4",
-    "purple":  "#8b5cf6",
-    "orange":  "#f97316",
-    "teal":    "#14b8a6",
+P = {
+    "bg":       "#070c16",
+    "surface":  "#0d1526",
+    "card":     "#111f35",
+    "glass":    "#141f33",
+    "border":   "#1a2d4a",
+    "rim":      "#243a5e",
+    "text":     "#e8f0fe",
+    "sub":      "#7ea3cc",
+    "muted":    "#3d5a7a",
+    "green":    "#10b981",
+    "green2":   "#34d399",
+    "green3":   "#6ee7b7",
+    "red":      "#ef4444",
+    "red2":     "#f87171",
+    "yellow":   "#f59e0b",
+    "blue":     "#3b82f6",
+    "blue2":    "#60a5fa",
+    "cyan":     "#06b6d4",
+    "purple":   "#8b5cf6",
+    "orange":   "#f97316",
+    "indigo":   "#6366f1",
 }
 
 SIG = {
-    "GÜÇLÜ AL":    {"color": "#4ade80", "bg": "#052e16", "ring": "#166534", "emoji": "⭐"},
-    "AL":          {"color": "#22c55e", "bg": "#031f0e", "ring": "#14532d", "emoji": "🟢"},
-    "ALIMA UYGUN": {"color": "#eab308", "bg": "#1c1400", "ring": "#713f12", "emoji": "🟡"},
-    "İZLE":        {"color": "#3b82f6", "bg": "#0c1a35", "ring": "#1e3a8a", "emoji": "🔵"},
-    "NÖTR":        {"color": "#64748b", "bg": "#0f172a", "ring": "#1e293b", "emoji": "⚪"},
-    "ZAYIF":       {"color": "#ef4444", "bg": "#1c0000", "ring": "#7f1d1d", "emoji": "🔴"},
-    "VETOLU":      {"color": "#dc2626", "bg": "#1a0000", "ring": "#991b1b", "emoji": "⛔"},
+    "GÜÇLÜ AL":    {"c": "#34d399", "bg": "#022c22", "bd": "#065f46", "e": "⭐"},
+    "AL":          {"c": "#10b981", "bg": "#011f17", "bd": "#047857", "e": "🟢"},
+    "ALIMA UYGUN": {"c": "#f59e0b", "bg": "#1c1000", "bd": "#92400e", "e": "🟡"},
+    "İZLE":        {"c": "#3b82f6", "bg": "#0a1628", "bd": "#1e40af", "e": "🔵"},
+    "NÖTR":        {"c": "#64748b", "bg": "#0d1526", "bd": "#334155", "e": "⚪"},
+    "ZAYIF":       {"c": "#ef4444", "bg": "#1a0505", "bd": "#7f1d1d", "e": "🔴"},
+    "VETOLU":      {"c": "#dc2626", "bg": "#150303", "bd": "#991b1b", "e": "⛔"},
 }
 
+TIER_LABEL = {1: "KAP", 2: "Tier-2", 3: "Tier-3"}
+TIER_COLOR = {1: "#f59e0b", 2: "#3b82f6", 3: "#64748b"}
 
-def _s(sig_cls: str) -> dict:
-    return SIG.get(sig_cls, SIG["NÖTR"])
+def sg(cls: str) -> dict:
+    return SIG.get(cls, SIG["NÖTR"])
 
 
-# ─── Küçük bileşenler ─────────────────────────────────────────────────────────
+# ─── Temel bileşenler ─────────────────────────────────────────────────────────
 
-def _pill(text: str, cls: str) -> str:
-    s = _s(cls)
+def pill(text: str, color: str, bg: str, border: str) -> str:
     return (
-        f'<span style="display:inline-block;background:{s["bg"]};color:{s["color"]};'
-        f'border:1px solid {s["ring"]};border-radius:999px;'
-        f'padding:2px 10px;font-size:11px;font-weight:600;white-space:nowrap;">'
-        f'{s["emoji"]} {text}</span>'
+        f'<span style="display:inline-block;padding:2px 10px;border-radius:999px;'
+        f'background:{bg};color:{color};border:1px solid {border};'
+        f'font-size:11px;font-weight:700;white-space:nowrap;">{text}</span>'
     )
 
-
-def _kpi(label: str, value: str, color: str = "") -> str:
-    vc = color or C["text"]
+def source_badge(source: str, tier: int) -> str:
+    c = TIER_COLOR.get(tier, P["muted"])
     return (
-        f'<div style="text-align:center;">'
-        f'<div style="color:{C["sub"]};font-size:10px;letter-spacing:0.08em;'
-        f'text-transform:uppercase;margin-bottom:3px;">{label}</div>'
-        f'<div style="color:{vc};font-size:20px;font-weight:700;'
-        f'letter-spacing:-0.03em;line-height:1;">{value}</div>'
-        f'</div>'
+        f'<span style="display:inline-block;padding:1px 7px;border-radius:4px;'
+        f'background:{c}18;color:{c};border:1px solid {c}44;'
+        f'font-size:10px;font-weight:700;letter-spacing:0.03em;">{source}</span>'
     )
 
+def score_chip(val: float, lo: float = -50, hi: float = 170) -> str:
+    pct = (val - lo) / (hi - lo) if hi > lo else 0.5
+    if pct > 0.7:   c = P["green2"]
+    elif pct > 0.5: c = P["green"]
+    elif pct > 0.35: c = P["yellow"]
+    else:           c = P["red"]
+    return f'<span style="color:{c};font-size:16px;font-weight:800;">{val:.0f}</span>'
 
-def _mini_bar(val: float, lo: float, hi: float, color: str, w: int = 80) -> str:
-    pct = max(0.0, min(1.0, (val - lo) / (hi - lo))) if hi > lo else 0.0
-    fill = int(w * pct)
+def rsi_color(v: float) -> str:
+    if v >= 70: return P["red"]
+    if v <= 30: return P["green2"]
+    if 40 <= v <= 60: return P["yellow"]
+    return P["sub"]
+
+def td(content: str, align: str = "right", pad: str = "8px 10px") -> str:
+    return f'<td style="padding:{pad};text-align:{align};vertical-align:middle;">{content}</td>'
+
+def th(label: str, align: str = "right") -> str:
     return (
-        f'<div style="display:inline-block;vertical-align:middle;'
-        f'width:{w}px;height:5px;background:{C["dim"]};border-radius:3px;">'
-        f'<div style="width:{fill}px;height:5px;background:{color};border-radius:3px;"></div>'
-        f'</div>'
+        f'<th style="padding:6px 10px;text-align:{align};color:{P["muted"]};'
+        f'font-size:9px;font-weight:700;letter-spacing:0.1em;'
+        f'text-transform:uppercase;border-bottom:1px solid {P["border"]};'
+        f'white-space:nowrap;">{label}</th>'
     )
 
+def sep(label: str = "") -> str:
+    if label:
+        return (
+            f'<div style="display:flex;align-items:center;gap:12px;'
+            f'margin:28px 0 16px;">'
+            f'<div style="flex:1;height:1px;background:{P["border"]};"></div>'
+            f'<span style="color:{P["muted"]};font-size:10px;font-weight:700;'
+            f'letter-spacing:0.12em;text-transform:uppercase;">{label}</span>'
+            f'<div style="flex:1;height:1px;background:{P["border"]};"></div>'
+            f'</div>'
+        )
+    return f'<div style="height:1px;background:{P["border"]};margin:20px 0;"></div>'
 
-def _ind_cell(label: str, val: str, note: str = "", color: str = "") -> str:
-    vc = color or C["text"]
-    return (
-        f'<td style="padding:8px 12px;border-right:1px solid {C["border"]};">'
-        f'<div style="color:{C["muted"]};font-size:9px;letter-spacing:0.08em;'
-        f'text-transform:uppercase;margin-bottom:2px;">{label}</div>'
-        f'<div style="color:{vc};font-size:14px;font-weight:600;">{val}</div>'
-        f'{"<div style=color:" + C["sub"] + ";font-size:10px;>" + note + "</div>" if note else ""}'
-        f'</td>'
+
+# ─── Hero bölümü ──────────────────────────────────────────────────────────────
+
+def _hero(
+    now,
+    signals: List[CombinedSignal],
+    ranked: Dict[str, List],
+    market_regime: dict,
+    usdtry: Optional[float],
+) -> str:
+    xu100 = market_regime.get("xu100_close", 0)
+    ema50 = market_regime.get("ema50_val", 0)
+    mok   = market_regime.get("above_ema50", False)
+    diff_pct = ((xu100 / ema50) - 1) * 100 if ema50 else 0
+    usd = f"{usdtry:.4f}" if usdtry else "—"
+
+    n_strong = len(ranked["GÜÇLÜ AL"])
+    n_buy    = len(ranked["AL"])
+    n_suit   = len(ranked["ALIMA UYGUN"])
+    n_watch  = len(ranked["İZLE"])
+    n_veto   = len(ranked["VETOLU"])
+
+    market_line = (
+        f'<span style="color:{P["green"]};font-weight:700;">▲ EMA50 +{diff_pct:.1f}% ÜSTÜNDE · PİYASA GÜÇLÜ</span>'
+        if mok else
+        f'<span style="color:{P["red"]};font-weight:700;">▼ EMA50 {diff_pct:.1f}% ALTINDA · PİYASA ZAYIF</span>'
     )
 
+    def stat(val, label, color):
+        return (
+            f'<div style="text-align:center;padding:0 4px;">'
+            f'<div style="font-size:28px;font-weight:900;color:{color};'
+            f'letter-spacing:-1.5px;line-height:1;">{val}</div>'
+            f'<div style="color:{P["muted"]};font-size:9px;letter-spacing:0.1em;'
+            f'text-transform:uppercase;margin-top:3px;">{label}</div>'
+            f'</div>'
+        )
 
-def _divider(label: str) -> str:
-    return (
-        f'<div style="display:flex;align-items:center;gap:10px;margin:24px 0 14px;">'
-        f'<div style="flex:1;height:1px;background:{C["border"]};"></div>'
-        f'<span style="color:{C["muted"]};font-size:10px;letter-spacing:0.12em;'
-        f'text-transform:uppercase;white-space:nowrap;">{label}</span>'
-        f'<div style="flex:1;height:1px;background:{C["border"]};"></div>'
-        f'</div>'
-    )
+    return f"""
+<div style="background:linear-gradient(160deg,#0a1628 0%,#060d1c 60%,#0a1221 100%);
+     border:1px solid {P["rim"]};border-radius:16px;overflow:hidden;margin-bottom:20px;">
+
+  <!-- Top bar -->
+  <div style="background:{P["glass"]};border-bottom:1px solid {P["border"]};
+       padding:10px 24px;display:flex;align-items:center;justify-content:space-between;
+       flex-wrap:wrap;gap:8px;">
+    <span style="color:{P["muted"]};font-size:11px;letter-spacing:0.08em;">
+      {now.strftime('%d %B %Y · %A').upper()} · {now.strftime('%H:%M')} İSTANBUL
+    </span>
+    <span style="color:{P["sub"]};font-size:11px;">
+      {len(signals)} hisse · EMA / RSI / MACD / BB / ADX / Stoch / Hacim
+    </span>
+  </div>
+
+  <!-- Başlık -->
+  <div style="padding:28px 24px 20px;text-align:center;">
+    <div style="color:{P["muted"]};font-size:10px;letter-spacing:0.2em;
+         text-transform:uppercase;margin-bottom:8px;">BIST30 · 5-Günlük Swing Trading</div>
+    <h1 style="font-size:28px;font-weight:900;color:{P["text"]};margin:0 0 4px;
+         letter-spacing:-1px;">Günlük Sinyal Raporu</h1>
+    <div style="font-size:13px;margin-top:8px;">{market_line}</div>
+  </div>
+
+  <!-- Piyasa metrikleri -->
+  <div style="padding:0 24px 20px;">
+    <div style="background:{P["surface"]};border:1px solid {P["border"]};
+         border-radius:12px;padding:16px 20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;
+           flex-wrap:wrap;gap:16px;">
+
+        <!-- XU100 -->
+        <div>
+          <div style="color:{P["muted"]};font-size:9px;letter-spacing:0.12em;
+               text-transform:uppercase;margin-bottom:4px;">BIST100 XU100</div>
+          <div style="color:{P["text"]};font-size:32px;font-weight:900;
+               letter-spacing:-1.5px;line-height:1;">{xu100:,.0f}</div>
+          <div style="color:{P["green"] if mok else P["red"]};font-size:12px;margin-top:3px;">
+            EMA50: {ema50:,.0f} · {f"+{diff_pct:.1f}%" if diff_pct >= 0 else f"{diff_pct:.1f}%"}
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <div style="width:1px;height:50px;background:{P["border"]};"></div>
+
+        <!-- USD/TRY -->
+        <div>
+          <div style="color:{P["muted"]};font-size:9px;letter-spacing:0.12em;
+               text-transform:uppercase;margin-bottom:4px;">USD / TRY</div>
+          <div style="color:{P["text"]};font-size:28px;font-weight:800;
+               letter-spacing:-1px;">{usd}</div>
+        </div>
+
+        <!-- Divider -->
+        <div style="width:1px;height:50px;background:{P["border"]};"></div>
+
+        <!-- Sinyal sayaçları -->
+        <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center;">
+          {stat(n_strong, "⭐ Güçlü Al", P["green2"])}
+          {stat(n_buy,    "🟢 Al",       P["green"])}
+          {stat(n_suit,   "🟡 Uygun",    P["yellow"])}
+          {stat(n_watch,  "🔵 İzle",     P["blue"])}
+          {stat(n_veto,   "⛔ Veto",     P["red"])}
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  {"<!-- Zayıf piyasa uyarısı -->" + f'<div style="margin:0 24px 20px;background:{P["red"]}15;border:1px solid {P["red"]}44;border-radius:8px;padding:10px 16px;"><span style="color:{P["red"]};font-weight:700;">⚠ Piyasa Zayıf</span> <span style="color:{P["sub"]};font-size:12px;">— XU100, EMA50 altında. Aktif AL sinyallerinde pozisyon boyutunu yarıya indir. Stop seviyelerine sıkı uy.</span></div>' if not mok else ""}
+
+</div>"""
 
 
-# ─── Trade Planı Kartı ────────────────────────────────────────────────────────
+# ─── Haber akışı ──────────────────────────────────────────────────────────────
+
+def _news_feed(
+    all_classified_news: List[ClassifiedNews],
+    news_scores_map: Dict[str, float],
+    sentiment_by_ticker: Dict[str, Any],
+) -> str:
+    if not all_classified_news:
+        return ""
+
+    # Skoru hesaplanmış haberleri topla
+    scored: List[tuple] = []
+    for cn in all_classified_news:
+        key   = f"{cn.item.source}|{cn.item.title[:40]}"
+        score = news_scores_map.get(key, 0.0)
+        scored.append((cn, score))
+
+    # Önemli haberleri filtrele (skor != 0 veya tier 1)
+    important = [(cn, s) for cn, s in scored if abs(s) >= 3 or cn.item.tier == 1]
+    important.sort(key=lambda x: abs(x[1]), reverse=True)
+
+    if not important:
+        # Skor bağımsız, en yeni 15 haberi göster
+        important = sorted(scored, key=lambda x: x[0].item.pub_date, reverse=True)[:15]
+
+    # Pozitif / negatif / nötr ayır
+    pos = [(cn, s) for cn, s in important if s > 0][:10]
+    neg = [(cn, s) for cn, s in important if s < 0][:8]
+    neu = [(cn, s) for cn, s in important if s == 0][:7]
+
+    def _row(cn: ClassifiedNews, score: float, idx: int) -> str:
+        days = (now_istanbul() - cn.item.pub_date).days
+        age  = "bugün" if days == 0 else (f"{days}g önce" if days < 7 else cn.item.pub_date.strftime("%d.%m"))
+        url  = cn.item.url or "#"
+        sc   = P["green"] if score > 0 else (P["red"] if score < 0 else P["muted"])
+        tick_str = " · ".join(cn.item.tickers[:3]) if cn.item.tickers else ""
+        is_rumor_str = ' <span style="color:{P[\'yellow\']};font-size:9px;">[söylenti]</span>' if cn.is_rumor else ""
+        event_str = f'<span style="color:{P["sub"]};font-size:10px;"> [{cn.event_category}]</span>' if cn.event_category else ""
+        row_bg = P["surface"] if idx % 2 == 0 else P["card"]
+
+        score_badge = (
+            f'<div style="background:{sc}15;border:1px solid {sc}40;'
+            f'border-radius:6px;padding:2px 8px;text-align:center;min-width:44px;">'
+            f'<span style="color:{sc};font-size:12px;font-weight:800;">'
+            f'{"+" if score > 0 else ""}{score:.0f}</span></div>'
+        ) if score != 0 else ""
+
+        return f"""
+        <tr style="background:{row_bg};border-bottom:1px solid {P["border"]};">
+          <td style="padding:10px 12px;vertical-align:top;width:52px;">
+            {score_badge}
+          </td>
+          <td style="padding:10px 4px;vertical-align:top;white-space:nowrap;">
+            {source_badge(cn.item.source, cn.item.tier)}
+            {"<br><span style='color:" + P['blue2'] + ";font-size:10px;font-weight:600;'>" + tick_str + "</span>" if tick_str else ""}
+          </td>
+          <td style="padding:10px 12px 10px 8px;vertical-align:top;">
+            <a href="{url}" style="color:{P['text']};font-size:13px;line-height:1.5;
+               font-weight:500;">{cn.item.title}</a>
+            {event_str}
+            <div style="color:{P['muted']};font-size:10px;margin-top:3px;">{age}</div>
+          </td>
+        </tr>"""
+
+    def _block(title: str, color: str, items: list) -> str:
+        if not items:
+            return ""
+        rows = "".join(_row(cn, s, i) for i, (cn, s) in enumerate(items))
+        return f"""
+        <div style="margin-bottom:16px;">
+          <div style="font-size:12px;font-weight:700;color:{color};
+               letter-spacing:0.05em;padding:8px 12px;
+               background:{color}12;border-left:3px solid {color};
+               border-radius:0 6px 6px 0;margin-bottom:2px;">{title}</div>
+          <table style="width:100%;border-collapse:collapse;">{rows}</table>
+        </div>"""
+
+    total_shown = len(pos) + len(neg) + len(neu)
+    return f"""
+<div style="background:{P["surface"]};border:1px solid {P["border"]};
+     border-radius:12px;overflow:hidden;">
+  <div style="padding:14px 16px;border-bottom:1px solid {P["border"]};
+       display:flex;align-items:center;justify-content:space-between;">
+    <span style="color:{P["text"]};font-size:14px;font-weight:700;">
+      📰 Piyasa Haber Akışı
+    </span>
+    <span style="color:{P["muted"]};font-size:11px;">
+      {total_shown} önemli haber · kaynaklara göre ağırlıklı
+    </span>
+  </div>
+  <div style="padding:12px 12px 8px;">
+    {_block("▲ Pozitif Haberler", P["green"], pos)}
+    {_block("▼ Negatif Haberler", P["red"], neg)}
+    {_block("● Genel / Sektör Haberleri", P["sub"], neu)}
+  </div>
+</div>"""
+
+
+# ─── 5-Günlük Trade Planı ─────────────────────────────────────────────────────
+
+def _five_day_plan(sig: CombinedSignal) -> str:
+    ts  = sig.tech_signal
+    rl  = sig.risk_levels
+    cls = sig.classification
+    s   = sg(cls)
+
+    if not rl:
+        return f'<p style="color:{P["muted"]};font-size:12px;">Risk seviyeleri hesaplanamadı.</p>'
+
+    # Setup tipine göre özelleştirilmiş plan
+    has_a = ts.layers.layer3_setup.setup_a
+    has_b = ts.layers.layer3_setup.setup_b
+    has_c = ts.layers.layer3_setup.setup_c
+
+    if has_b:
+        setup_tip  = "BB Squeeze Kırılımı — volatilite patlaması"
+        entry_note = "Kırılım günü hacim 1.5x+ ise giriş yap. Gap-up durumunda ilk retesti bekle."
+        d2_d3_note = "Kırılımın devamını izle. BB üst bandı destek olarak çalışmalı. Günlük kapanış BB orta bandının altına düşerse pozisyonu kapat."
+        exit_note  = "T1'de %50 çık, stop'u girişe çek. T2 için ADX > 25 şartını koru."
+    elif has_a:
+        setup_tip  = "EMA21 Pullback — ana trend geri çekilmesi"
+        entry_note = "EMA21 üstünde kapanışı onayla, sabah 10:30 sonrası giriş yap (açılış gürültüsünden kaçın)."
+        d2_d3_note = "EMA21'i yakından izle. Kapanış EMA21 altında ise çık. RSI 40 altına düşerse savunmaya geç."
+        exit_note  = "T1'de %50 çık ve stop'u girişe çek. EMA21 kırılıncaya kadar ya da T2'ye ulaşana kadar tut."
+    elif has_c:
+        setup_tip  = "RSI Bullish Diverjans — momentum dönüşü"
+        entry_note = "Stoch K, D'yi yukarı kestikten sonra giriş yap. Hacim ortalamanın üstünde olmalı."
+        d2_d3_note = "RSI 50 üstünde tutunuyor mu kontrol et. Stoch aşırı alım (>80) bölgesine girdiyse dikkatli ol."
+        exit_note  = "Diverjans timleri genelde kısa ömürlüdür. T1'de %60 çık, T2 için bekleme."
+    else:
+        setup_tip  = "Momentum / Teknik Güç"
+        entry_note = "Piyasa açılışından sonraki ilk saat içinde seviyeleri değerlendir."
+        d2_d3_note = "Ana EMA seviyeleri ve RSI'yi günlük takip et."
+        exit_note  = "Hedeflere ulaştığında kısmi kar al, stop'u güncelle."
+
+    stop_pct  = (rl.entry - rl.stop)    / rl.entry * 100
+    t1_pct    = (rl.target1 - rl.entry) / rl.entry * 100
+    t2_pct    = (rl.target2 - rl.entry) / rl.entry * 100
+
+    def day_row(day: str, icon: str, color: str, content: str) -> str:
+        return f"""
+        <div style="display:flex;gap:12px;padding:10px 0;
+             border-bottom:1px solid {P['border']};">
+          <div style="flex-shrink:0;width:64px;text-align:right;">
+            <span style="color:{color};font-size:10px;font-weight:700;
+                letter-spacing:0.06em;">{day}</span><br>
+            <span style="font-size:16px;">{icon}</span>
+          </div>
+          <div style="flex:1;color:{P['sub']};font-size:12px;line-height:1.6;">
+            {content}
+          </div>
+        </div>"""
+
+    return f"""
+<div style="background:{P['glass']};border:1px solid {P['border']};
+     border-radius:10px;padding:16px;margin-top:2px;">
+  <div style="color:{P['muted']};font-size:9px;font-weight:700;letter-spacing:0.12em;
+       text-transform:uppercase;margin-bottom:2px;">Setup</div>
+  <div style="color:{s['c']};font-size:13px;font-weight:600;margin-bottom:12px;">
+    {setup_tip}
+  </div>
+
+  {day_row("GÜN 1", "🎯", P["blue2"],
+    f'<b style="color:{P["text"]};">Giriş:</b> {rl.entry:.2f} ₺ (limit emir önerilir)<br>'
+    f'{entry_note}<br>'
+    f'<span style="color:{P["red"]};">Stop başlangıç: {rl.stop:.2f} ₺ (−{stop_pct:.1f}%)</span>'
+  )}
+
+  {day_row("GÜN 2–3", "👁", P["yellow"],
+    f'<b style="color:{P["text"]};">Pozisyon yönetimi:</b><br>'
+    f'{d2_d3_note}<br>'
+    f'RSI: {ts.rsi:.1f} · ADX: {ts.adx:.1f} · Hacim: {ts.volume_ratio:.1f}x ort.'
+  )}
+
+  {day_row("GÜN 4–5", "✅", P["green2"],
+    f'<b style="color:{P["green2"]};">Hedef 1: {rl.target1:.2f} ₺ (+{t1_pct:.1f}%)</b> — %50 pozisyonu kapat, stop\'u {rl.entry:.2f}\'e çek<br>'
+    f'<b style="color:{P["green3"]};">Hedef 2: {rl.target2:.2f} ₺ (+{t2_pct:.1f}%)</b> — kalan pozisyonu kapat<br>'
+    f'{exit_note}'
+  )}
+
+  <div style="margin-top:10px;padding:8px 12px;background:{P['surface']};
+       border-radius:6px;color:{P['muted']};font-size:11px;line-height:1.6;">
+    <b style="color:{P['sub']};">R/R:</b> {rl.rr_ratio:.1f}:1 ·
+    <b style="color:{P['sub']};">Pozisyon:</b> {rl.position_size:,} lot ·
+    <b style="color:{P['sub']};">Risk:</b> {format_tl(rl.risk_amount)} ·
+    <b style="color:{P['sub']};">ATR(14):</b> {ts.atr:.3f}
+  </div>
+</div>"""
+
+
+# ─── Trade kartı ──────────────────────────────────────────────────────────────
 
 def _trade_card(sig: CombinedSignal, news_scores: Dict[str, float]) -> str:
-    ts   = sig.tech_signal
-    rl   = sig.risk_levels
-    cls  = sig.classification
-    s    = _s(cls)
+    ts  = sig.tech_signal
+    rl  = sig.risk_levels
+    cls = sig.classification
+    s   = sg(cls)
 
-    pct  = (ts.close - ts.prev_close) / ts.prev_close * 100 if ts.prev_close else 0.0
-    pct_color = C["green"] if pct >= 0 else C["red"]
-    pct_str   = f'{"+" if pct >= 0 else ""}{pct:.2f}%'
+    pct = (ts.close - ts.prev_close) / ts.prev_close * 100 if ts.prev_close else 0.0
+    pct_c = P["green"] if pct >= 0 else P["red"]
 
-    # Aktif setup'lar
-    setups = sig.tech_signal.layers.layer3_setup.active_setups()
-    setup_str = " · ".join(setups) if setups else "—"
-
-    # MACD yönü
-    macd_color = C["green"] if ts.macd_hist >= 0 else C["red"]
-    macd_str   = f'{"+" if ts.macd_hist >= 0 else ""}{ts.macd_hist:.3f}'
-
-    # RSI rengi
-    rsi_color = (C["red"] if ts.rsi > 70 else
-                 C["green"] if ts.rsi < 30 else
-                 C["yellow"] if 45 <= ts.rsi <= 65 else C["text"])
-
-    # ADX trendi
-    adx_color  = C["green"] if ts.adx > 25 else C["sub"]
-    trend_str  = "Güçlü ↑" if (ts.dip > ts.dim and ts.adx > 20) else \
-                 "Güçlü ↓" if (ts.dim > ts.dip and ts.adx > 20) else "Yatay"
-    trend_col  = C["green"] if "↑" in trend_str else (C["red"] if "↓" in trend_str else C["sub"])
-
-    # Stoch durumu
-    stoch_str  = f'{ts.stoch_k:.0f} / {ts.stoch_d:.0f}' if ts.stoch_k else "—"
-    stoch_col  = C["red"] if ts.stoch_k > 80 else (C["green"] if ts.stoch_k < 20 else C["sub"])
-
-    # BB durumu
-    bb_pos = ""
-    if ts.bb_upper and ts.bb_lower and ts.close:
-        bb_range = ts.bb_upper - ts.bb_lower
-        if bb_range > 0:
-            bb_pct = (ts.close - ts.bb_lower) / bb_range * 100
-            bb_pos = f'{bb_pct:.0f}%'
-
-    # EMA konumu
-    ema_lines = []
-    if ts.ema21:
-        rel = (ts.close - ts.ema21) / ts.ema21 * 100
-        ema_lines.append(f'EMA21 {ts.ema21:.2f} ({rel:+.1f}%)')
-    if ts.ema50:
-        rel = (ts.close - ts.ema50) / ts.ema50 * 100
-        ema_lines.append(f'EMA50 {ts.ema50:.2f} ({rel:+.1f}%)')
-    if ts.ema200:
-        rel = (ts.close - ts.ema200) / ts.ema200 * 100
-        ema_lines.append(f'EMA200 {ts.ema200:.2f} ({rel:+.1f}%)')
-    ema_str = " · ".join(ema_lines) if ema_lines else "—"
-
-    # Risk tablosu
+    # Seviye görsel bar
+    level_bar = ""
     if rl:
-        risk_html = f"""
-        <table style="width:100%;border-collapse:collapse;margin-top:2px;">
-          <tr>
-            <td style="padding:0 14px 0 0;">
-              <div style="color:{C['muted']};font-size:9px;letter-spacing:0.08em;
-                   text-transform:uppercase;">Giriş</div>
-              <div style="color:{C['text']};font-size:16px;font-weight:700;">
-                {rl.entry:.2f} ₺</div>
-            </td>
-            <td style="padding:0 14px 0 0;">
-              <div style="color:{C['muted']};font-size:9px;letter-spacing:0.08em;
-                   text-transform:uppercase;">Stop</div>
-              <div style="color:{C['red']};font-size:16px;font-weight:700;">
-                {rl.stop:.2f} ₺</div>
-              <div style="color:{C['sub']};font-size:10px;">
-                -{((rl.entry - rl.stop) / rl.entry * 100):.1f}%</div>
-            </td>
-            <td style="padding:0 14px 0 0;">
-              <div style="color:{C['muted']};font-size:9px;letter-spacing:0.08em;
-                   text-transform:uppercase;">Hedef 1</div>
-              <div style="color:{C['green']};font-size:16px;font-weight:700;">
-                {rl.target1:.2f} ₺</div>
-              <div style="color:{C['sub']};font-size:10px;">
-                +{((rl.target1 - rl.entry) / rl.entry * 100):.1f}% · ½ çık</div>
-            </td>
-            <td style="padding:0 14px 0 0;">
-              <div style="color:{C['muted']};font-size:9px;letter-spacing:0.08em;
-                   text-transform:uppercase;">Hedef 2</div>
-              <div style="color:{C['green2']};font-size:16px;font-weight:700;">
-                {rl.target2:.2f} ₺</div>
-              <div style="color:{C['sub']};font-size:10px;">
-                +{((rl.target2 - rl.entry) / rl.entry * 100):.1f}% · kalan çık</div>
-            </td>
-            <td style="padding:0 16px 0 0;">
-              <div style="color:{C['muted']};font-size:9px;letter-spacing:0.08em;
-                   text-transform:uppercase;">R / R</div>
-              <div style="color:{C['cyan']};font-size:16px;font-weight:700;">
-                {rl.rr_ratio:.1f}:1</div>
-            </td>
-            <td>
-              <div style="color:{C['muted']};font-size:9px;letter-spacing:0.08em;
-                   text-transform:uppercase;">Pozisyon</div>
-              <div style="color:{C['text']};font-size:13px;font-weight:600;">
-                {rl.position_size:,} lot</div>
-              <div style="color:{C['sub']};font-size:10px;">
-                Risk: {format_tl(rl.risk_amount)}</div>
-            </td>
-          </tr>
-        </table>"""
-
-        # Vizüel seviye çizgisi
-        lo   = rl.stop * 0.995
-        hi   = rl.target2 * 1.005
-        rng  = hi - lo
-        s_pct  = int((rl.stop    - lo) / rng * 100)
-        e_pct  = int((rl.entry   - lo) / rng * 100)
-        t1_pct = int((rl.target1 - lo) / rng * 100)
-        t2_pct = int((rl.target2 - lo) / rng * 100)
+        lo  = rl.stop   * 0.993
+        hi  = rl.target2 * 1.007
+        rng = hi - lo
+        def ppos(v): return max(2, min(96, int((v - lo) / rng * 100)))
+        sp  = ppos(rl.stop)
+        ep  = ppos(rl.entry)
+        t1p = ppos(rl.target1)
+        t2p = ppos(rl.target2)
 
         level_bar = f"""
-        <div style="position:relative;height:24px;background:{C['dim']};
-             border-radius:4px;margin-top:10px;overflow:hidden;">
-          <div style="position:absolute;left:{s_pct}%;width:{e_pct - s_pct}%;
-               height:100%;background:{C['red']}22;"></div>
-          <div style="position:absolute;left:{e_pct}%;width:{t1_pct - e_pct}%;
-               height:100%;background:{C['green']}33;"></div>
-          <div style="position:absolute;left:{t1_pct}%;width:{t2_pct - t1_pct}%;
-               height:100%;background:{C['green2']}22;"></div>
-          <div style="position:absolute;left:{s_pct}%;top:50%;transform:translate(-50%,-50%);
-               width:2px;height:70%;background:{C['red']};border-radius:1px;"></div>
-          <div style="position:absolute;left:{e_pct}%;top:50%;transform:translate(-50%,-50%);
-               width:3px;height:90%;background:{C['text']};border-radius:1px;"></div>
-          <div style="position:absolute;left:{t1_pct}%;top:50%;transform:translate(-50%,-50%);
-               width:2px;height:70%;background:{C['green']};border-radius:1px;"></div>
-          <div style="position:absolute;left:{t2_pct}%;top:50%;transform:translate(-50%,-50%);
-               width:2px;height:70%;background:{C['green2']};border-radius:1px;"></div>
-          <div style="position:absolute;left:4px;top:50%;transform:translateY(-50%);
-               color:{C['red']};font-size:9px;font-weight:700;">STOP</div>
-          <div style="position:absolute;left:{e_pct + 1}%;top:50%;transform:translateY(-50%);
-               color:{C['text']};font-size:9px;font-weight:700;">GİRİŞ</div>
-          <div style="position:absolute;left:{t1_pct + 1}%;top:50%;transform:translateY(-50%);
-               color:{C['green']};font-size:9px;font-weight:700;">T1</div>
-          <div style="position:absolute;left:{min(t2_pct + 1, 78)}%;top:50%;
-               transform:translateY(-50%);color:{C['green2']};font-size:9px;
-               font-weight:700;">T2</div>
-        </div>"""
-    else:
-        risk_html  = f'<p style="color:{C["sub"]};font-size:12px;">Risk seviyeleri hesaplanamadı.</p>'
-        level_bar  = ""
+        <div style="position:relative;height:28px;background:{P['glass']};
+             border-radius:6px;margin:12px 0 4px;border:1px solid {P['border']};">
+          <div style="position:absolute;left:{sp}%;width:{ep-sp}%;height:100%;
+               background:{P['red']}20;border-radius:6px 0 0 6px;"></div>
+          <div style="position:absolute;left:{ep}%;width:{t1p-ep}%;height:100%;
+               background:{P['green']}18;"></div>
+          <div style="position:absolute;left:{t1p}%;width:{t2p-t1p}%;height:100%;
+               background:{P['green2']}12;border-radius:0 6px 6px 0;"></div>
+          {"".join([
+            f'<div style="position:absolute;left:{x}%;top:15%;height:70%;width:2px;'
+            f'background:{c};border-radius:1px;transform:translateX(-50%);"></div>'
+            f'<div style="position:absolute;left:{x}%;bottom:-16px;font-size:9px;'
+            f'color:{c};font-weight:700;transform:translateX(-50%);white-space:nowrap;">{lbl}</div>'
+            for x, c, lbl in [
+                (sp,  P["red"],    f"Stop {rl.stop:.2f}"),
+                (ep,  P["text"],   f"Giriş {rl.entry:.2f}"),
+                (t1p, P["green"],  f"T1 {rl.target1:.2f}"),
+                (t2p, P["green2"], f"T2 {rl.target2:.2f}"),
+            ]
+          ])}
+        </div>
+        <div style="height:18px;"></div>"""
+
+    # İndikatör satırı
+    def ind(label: str, val: str, note: str = "", color: str = P["text"]) -> str:
+        return (
+            f'<div style="padding:8px 10px;border-right:1px solid {P["border"]};'
+            f'min-width:70px;">'
+            f'<div style="color:{P["muted"]};font-size:9px;letter-spacing:0.08em;'
+            f'text-transform:uppercase;margin-bottom:2px;">{label}</div>'
+            f'<div style="color:{color};font-size:14px;font-weight:700;">{val}</div>'
+            f'{"<div style=color:" + P["sub"] + ";font-size:10px;>" + note + "</div>" if note else ""}'
+            f'</div>'
+        )
+
+    mc = P["green"] if ts.macd_hist >= 0 else P["red"]
+    ema21_c = P["green"] if ts.close > ts.ema21 > 0 else P["red"]
+    ema50_c = P["green"] if ts.close > ts.ema50 > 0 else P["red"]
+    ema200_c= P["green"] if ts.close > ts.ema200 > 0 else P["red"]
+
+    trend_dir = ("↑ Bull" if ts.dip > ts.dim and ts.adx > 20 else
+                 "↓ Bear" if ts.dim > ts.dip and ts.adx > 20 else "→ Yatay")
+    trend_c = P["green"] if "Bull" in trend_dir else (P["red"] if "Bear" in trend_dir else P["sub"])
+
+    bb_pos_str = ""
+    if ts.bb_upper and ts.bb_lower and ts.close:
+        rng = ts.bb_upper - ts.bb_lower
+        if rng > 0:
+            bb_pos_str = f"{(ts.close - ts.bb_lower) / rng * 100:.0f}%"
+
+    ind_row1 = (
+        ind("RSI 14", f"{ts.rsi:.1f}", "alım <30" if ts.rsi < 30 else ("sat >70" if ts.rsi > 70 else ""), rsi_color(ts.rsi)) +
+        ind("ADX",    f"{ts.adx:.1f}", "güçlü >25", P["green"] if ts.adx > 25 else P["sub"]) +
+        ind("DI+/DI−", f"{ts.dip:.0f}/{ts.dim:.0f}", trend_dir, trend_c) +
+        ind("MACD",   f'{"+" if ts.macd_hist >= 0 else ""}{ts.macd_hist:.4f}', "hist", mc) +
+        ind("Hacim",  f"{ts.volume_ratio:.1f}x", "20g ort.", P["cyan"] if ts.volume_ratio >= 1.5 else P["sub"]) +
+        ind("Stoch K", f"{ts.stoch_k:.0f}", f"D:{ts.stoch_d:.0f}", P["red"] if ts.stoch_k > 80 else (P["green"] if ts.stoch_k < 20 else P["sub"]))
+    )
+    ind_row2 = (
+        ind("EMA 21",  f"{ts.ema21:.2f}" if ts.ema21 else "—", f'{"▲ üstünde" if ts.close > ts.ema21 > 0 else "▼ altında"}', ema21_c) +
+        ind("EMA 50",  f"{ts.ema50:.2f}" if ts.ema50 else "—", f'{"▲ üstünde" if ts.close > ts.ema50 > 0 else "▼ altında"}', ema50_c) +
+        ind("EMA 200", f"{ts.ema200:.2f}" if ts.ema200 else "—", f'{"▲ üstünde" if ts.close > ts.ema200 > 0 else "▼ altında"}', ema200_c) +
+        ind("BB Üst",  f"{ts.bb_upper:.2f}" if ts.bb_upper else "—", "direnç", P["sub"]) +
+        ind("BB Alt",  f"{ts.bb_lower:.2f}" if ts.bb_lower else "—", "destek", P["sub"]) +
+        ind("BB Pos.", bb_pos_str or "—", "bantta yer", P["yellow"] if bb_pos_str and int(bb_pos_str[:-1]) > 80 else P["sub"])
+    )
 
     # Haberler
-    news_rows = ""
     sorted_news = sorted(
         sig.news_items,
         key=lambda cn: abs(news_scores.get(f"{cn.item.source}|{cn.item.title[:40]}", 0)),
         reverse=True,
-    )[:4]
+    )[:5]
+    news_html = ""
     for cn in sorted_news:
         ns = news_scores.get(f"{cn.item.source}|{cn.item.title[:40]}", 0.0)
         days = (now_istanbul() - cn.item.pub_date).days
         age  = "bugün" if days == 0 else f"{days}g"
-        nc   = C["green"] if ns > 0 else (C["red"] if ns < 0 else C["sub"])
+        nc   = P["green"] if ns > 0 else (P["red"] if ns < 0 else P["sub"])
         url  = cn.item.url or "#"
-        news_rows += (
-            f'<div style="display:flex;align-items:flex-start;gap:8px;'
-            f'padding:6px 0;border-bottom:1px solid {C["border"]};">'
-            f'<span style="color:{nc};font-size:11px;font-weight:700;'
-            f'min-width:36px;text-align:right;">{"+" if ns > 0 else ""}{ns:.0f}</span>'
+        news_html += (
+            f'<div style="padding:7px 0;border-bottom:1px solid {P["border"]};'
+            f'display:flex;gap:10px;align-items:flex-start;">'
+            f'<div style="min-width:38px;text-align:right;'
+            f'color:{nc};font-size:11px;font-weight:700;padding-top:1px;">'
+            f'{"+" if ns > 0 else ""}{ns:.0f}</div>'
             f'<div>'
-            f'<span style="color:{C["muted"]};font-size:10px;">{cn.item.source} · {age}</span><br>'
-            f'<a href="{url}" style="color:{C["text"]};font-size:12px;line-height:1.4;">'
-            f'{cn.item.title[:85]}{"…" if len(cn.item.title) > 85 else ""}</a>'
+            f'{source_badge(cn.item.source, cn.item.tier)}'
+            f'<span style="color:{P["muted"]};font-size:10px;margin-left:6px;">{age}</span><br>'
+            f'<a href="{url}" style="color:{P["text"]};font-size:12px;line-height:1.5;">'
+            f'{cn.item.title[:90]}{"…" if len(cn.item.title) > 90 else ""}</a>'
             f'</div></div>'
         )
+    if not news_html:
+        news_html = f'<p style="color:{P["muted"]};font-size:12px;margin:0;">Son 7 günde ilgili haber yok.</p>'
 
-    news_section = news_rows or f'<p style="color:{C["muted"]};font-size:12px;margin:0;">Son 7 günde ilgili haber yok.</p>'
-
-    # AI yorum
     ai_html = ""
     if sig.ai_commentary:
         ai_html = (
-            f'<div style="background:{C["card"]};border-left:3px solid {C["blue"]};'
+            f'<div style="background:{P["indigo"]}12;border-left:3px solid {P["indigo"]};'
             f'border-radius:0 6px 6px 0;padding:10px 14px;margin-top:10px;">'
-            f'<div style="color:{C["blue"]};font-size:10px;font-weight:700;'
-            f'letter-spacing:0.08em;margin-bottom:4px;">🤖 AI YORUM</div>'
-            f'<div style="color:{C["text"]};font-size:12px;line-height:1.6;">'
+            f'<div style="color:{P["indigo"]};font-size:9px;font-weight:700;'
+            f'letter-spacing:0.1em;margin-bottom:4px;">🤖 AI YORUM</div>'
+            f'<div style="color:{P["text"]};font-size:12px;line-height:1.6;">'
             f'{sig.ai_commentary}</div></div>'
         )
 
-    # Veto banner
     veto_html = ""
     if sig.is_vetoed:
-        bc = C["red"]
         veto_html = (
-            f'<div style="background:{bc}15;border:1px solid {bc}55;'
+            f'<div style="background:{P["red"]}12;border:1px solid {P["red"]}44;'
             f'border-radius:6px;padding:8px 14px;margin-top:10px;">'
-            f'<b style="color:{bc};">⛔ VETOLU</b> — '
-            f'<span style="color:{C["text"]};font-size:12px;">{sig.veto_reason}</span>'
+            f'<b style="color:{P["red"]};">⛔ VETO</b> — '
+            f'<span style="color:{P["text"]};font-size:12px;">{sig.veto_reason}</span>'
             f'</div>'
         )
 
-    # Flags
-    flags_html = ""
-    if sig.flags:
-        flags_html = (
-            f'<div style="background:{C["orange"]}10;border:1px solid {C["orange"]}33;'
-            f'border-radius:6px;padding:8px 14px;margin-top:8px;">'
-            + "".join(
-                f'<div style="color:{C["orange"]};font-size:11px;">⚠ {f}</div>'
-                for f in sig.flags
-            ) + '</div>'
-        )
+    setups = ts.layers.layer3_setup.active_setups()
+    setup_str = " · ".join(setups) if setups else "—"
 
     return f"""
-<div style="background:{s['bg']};border:1px solid {s['ring']};
-     border-radius:12px;overflow:hidden;margin-bottom:16px;">
+<div style="background:{s['bg']};border:1px solid {s['bd']};
+     border-radius:14px;overflow:hidden;margin-bottom:16px;">
 
-  <!-- Kart Başlığı -->
-  <div style="padding:16px 20px 12px;border-bottom:1px solid {s['ring']}30;">
-    <div style="display:flex;justify-content:space-between;
-         align-items:flex-start;flex-wrap:wrap;gap:8px;">
+  <!-- Kart üst şerit -->
+  <div style="height:3px;background:linear-gradient(90deg,{s['c']},{s['c']}44);"></div>
+
+  <!-- Başlık -->
+  <div style="padding:16px 20px 12px;border-bottom:1px solid {P['border']};">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;
+         flex-wrap:wrap;gap:10px;">
       <div>
-        <span style="font-size:22px;font-weight:800;color:{C['text']};
+        <span style="font-size:24px;font-weight:900;color:{P['text']};
             letter-spacing:-0.5px;">{sig.ticker}</span>
-        <span style="color:{C['sub']};font-size:13px;margin-left:8px;">
+        <span style="color:{P['sub']};font-size:13px;margin-left:10px;">
           {sig.company_name}</span>
-        <span style="color:{C['muted']};font-size:11px;margin-left:6px;">
-          · {sig.sector}</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;">
-        {_pill(cls, cls)}
-        <span style="font-size:26px;font-weight:800;color:{s['color']};
-            letter-spacing:-1px;">{sig.total_score:.0f}</span>
-        <div style="text-align:right;">
-          <div style="color:{C['text']};font-size:16px;font-weight:700;">
-            {ts.close:.2f} ₺</div>
-          <div style="color:{pct_color};font-size:12px;">{pct_str}</div>
+        <span style="color:{P['muted']};font-size:11px;"> · {sig.sector}</span>
+        <div style="margin-top:5px;">
+          {pill(f"{sg(cls)['e']} {cls}", s['c'], s['bg'], s['bd'])}
+          <span style="color:{P['muted']};font-size:11px;margin-left:8px;">
+            Setup: <b style="color:{s['c']};">{setup_str}</b></span>
         </div>
       </div>
+      <div style="text-align:right;">
+        <div style="font-size:30px;font-weight:900;color:{s['c']};
+            letter-spacing:-1.5px;line-height:1;">{sig.total_score:.0f}</div>
+        <div style="color:{P['text']};font-size:18px;font-weight:700;margin-top:2px;">
+          {ts.close:.2f} ₺</div>
+        <div style="color:{pct_c};font-size:13px;">
+          {"+" if pct >= 0 else ""}{pct:.2f}%</div>
+      </div>
     </div>
-    <div style="margin-top:8px;color:{C['sub']};font-size:11px;">
-      📐 Setup: <b style="color:{s['color']};">{setup_str}</b>
-      {"  ·  " + "<b style='color:" + C['red'] + ";'>⛔ " + sig.veto_reason[:60] + "</b>" if sig.is_vetoed else ""}
+  </div>
+
+  <!-- Skor şeridi -->
+  <div style="padding:10px 20px;border-bottom:1px solid {P['border']};
+       background:{P['glass']};display:flex;gap:20px;flex-wrap:wrap;">
+    <div>
+      <span style="color:{P['muted']};font-size:9px;letter-spacing:0.1em;">TEKNİK</span>
+      <span style="color:{P['green']};font-size:15px;font-weight:700;margin-left:8px;">{sig.tech_score}</span>
+      <span style="color:{P['muted']};font-size:11px;">/100</span>
+    </div>
+    <div>
+      <span style="color:{P['muted']};font-size:9px;letter-spacing:0.1em;">HABER</span>
+      <span style="color:{P['green'] if sig.news_score > 0 else P['red'] if sig.news_score < 0 else P['sub']};
+          font-size:15px;font-weight:700;margin-left:8px;">
+        {"+" if sig.news_score > 0 else ""}{sig.news_score:.1f}</span>
+      <span style="color:{P['muted']};font-size:11px;margin-left:4px;">
+        {sig.news_sentiment_label}</span>
+    </div>
+    <div>
+      <span style="color:{P['muted']};font-size:9px;letter-spacing:0.1em;">LİKİDİTE</span>
+      <span style="color:{P['cyan']};font-size:15px;font-weight:700;margin-left:8px;">{sig.liquidity_score}</span>
+      <span style="color:{P['muted']};font-size:11px;">/20</span>
     </div>
   </div>
 
   <!-- Trade Planı -->
-  <div style="padding:14px 20px;border-bottom:1px solid {C['border']};">
-    <div style="color:{C['muted']};font-size:9px;letter-spacing:0.1em;
-         text-transform:uppercase;margin-bottom:8px;">Trade Planı · 5 Günlük Swing</div>
-    {risk_html}
+  <div style="padding:14px 20px;border-bottom:1px solid {P['border']};">
+    <div style="color:{P['muted']};font-size:9px;font-weight:700;letter-spacing:0.12em;
+         text-transform:uppercase;margin-bottom:8px;">5-Günlük Trade Planı</div>
     {level_bar}
+    {_five_day_plan(sig)}
   </div>
 
   <!-- İndikatörler -->
-  <div style="border-bottom:1px solid {C['border']};">
-    <div style="color:{C['muted']};font-size:9px;letter-spacing:0.1em;
-         text-transform:uppercase;padding:10px 20px 6px;">İndikatörler</div>
-    <table style="width:100%;border-collapse:collapse;">
-      <tr style="border-bottom:1px solid {C['border']};">
-        {_ind_cell("RSI 14", f"{ts.rsi:.1f}", "Aşırı sat<30 / alım>70", rsi_color)}
-        {_ind_cell("ADX", f"{ts.adx:.1f}", "Trend güçlü >25", adx_color)}
-        {_ind_cell("DI+ / DI−", f"{ts.dip:.1f} / {ts.dim:.1f}", trend_str, trend_col)}
-        {_ind_cell("MACD Hist", macd_str, "Momentum yönü", macd_color)}
-        {_ind_cell("Hacim", f"{ts.volume_ratio:.1f}x", "20g ortalaması", C['cyan'] if ts.volume_ratio >= 1.5 else C['sub'])}
-        {_ind_cell("Stoch K/D", stoch_str, "Aşırı sat<20", stoch_col)}
-      </tr>
-      <tr>
-        {_ind_cell("EMA 21", f"{ts.ema21:.2f}" if ts.ema21 else "—", f'{"▲ üstünde" if ts.close > ts.ema21 > 0 else "▼ altında"}', C['green'] if ts.close > ts.ema21 > 0 else C['red'])}
-        {_ind_cell("EMA 50", f"{ts.ema50:.2f}" if ts.ema50 else "—", f'{"▲ üstünde" if ts.close > ts.ema50 > 0 else "▼ altında"}', C['green'] if ts.close > ts.ema50 > 0 else C['red'])}
-        {_ind_cell("EMA 200", f"{ts.ema200:.2f}" if ts.ema200 else "—", f'{"▲ üstünde" if ts.close > ts.ema200 > 0 else "▼ altında"}', C['green'] if ts.close > ts.ema200 > 0 else C['red'])}
-        {_ind_cell("BB Üst", f"{ts.bb_upper:.2f}" if ts.bb_upper else "—", "Direnç", C['sub'])}
-        {_ind_cell("BB Alt", f"{ts.bb_lower:.2f}" if ts.bb_lower else "—", "Destek", C['sub'])}
-        {_ind_cell("BB Pozisyon", bb_pos or "—", "Bantta yer", C['yellow'] if bb_pos and int(bb_pos[:-1]) > 80 else C['sub'])}
-      </tr>
-    </table>
-    <div style="padding:6px 20px 10px;color:{C['muted']};font-size:11px;">
-      {ema_str} · ATR(14): {ts.atr:.3f}
+  <div style="border-bottom:1px solid {P['border']};">
+    <div style="color:{P['muted']};font-size:9px;font-weight:700;letter-spacing:0.12em;
+         text-transform:uppercase;padding:10px 20px 4px;">İndikatörler</div>
+    <div style="display:flex;flex-wrap:wrap;border-top:1px solid {P['border']};">
+      {ind_row1}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;border-top:1px solid {P['border']};">
+      {ind_row2}
+    </div>
+    <div style="padding:6px 20px 10px;color:{P['muted']};font-size:11px;">
+      ATR(14): <b style="color:{P['sub']};">{ts.atr:.3f}</b>
+      {"  ·  EMA9: " + f'<b style="color:{P["sub"]};">{ts.ema9:.2f}</b>' if ts.ema9 else ""}
     </div>
   </div>
 
   <!-- Haberler -->
   <div style="padding:12px 20px;">
-    <div style="color:{C['muted']};font-size:9px;letter-spacing:0.1em;
-         text-transform:uppercase;margin-bottom:8px;">
-      Haberler
-      <span style="color:{'#22c55e' if sig.news_score > 0 else '#ef4444' if sig.news_score < 0 else C['muted']};
-          margin-left:6px;font-size:11px;font-weight:700;">
-        {sig.news_sentiment_label} ({sig.news_score:+.1f})</span>
-    </div>
-    {news_section}
+    <div style="color:{P['muted']};font-size:9px;font-weight:700;letter-spacing:0.12em;
+         text-transform:uppercase;margin-bottom:8px;">Şirket Haberleri</div>
+    {news_html}
     {ai_html}
+    {veto_html}
+    {"".join(f"<div style='color:{P['orange']};font-size:11px;margin-top:4px;'>⚠ {f}</div>" for f in sig.flags)}
   </div>
 
-  {('<div style="padding:0 20px 12px;">' + flags_html + veto_html + '</div>') if (flags_html or veto_html) else ''}
 </div>"""
 
 
 # ─── BIST30 Tam Tarama Tablosu ────────────────────────────────────────────────
 
 def _full_table(ranked: Dict[str, List[CombinedSignal]]) -> str:
-    order = ["GÜÇLÜ AL", "AL", "ALIMA UYGUN", "İZLE", "NÖTR", "ZAYIF", "VETOLU"]
-    all_sigs: List[CombinedSignal] = []
+    order  = ["GÜÇLÜ AL","AL","ALIMA UYGUN","İZLE","NÖTR","ZAYIF","VETOLU"]
+    all_s: List[CombinedSignal] = []
     for cls in order:
-        all_sigs.extend(ranked.get(cls, []))
+        all_s.extend(ranked.get(cls, []))
 
     rows = ""
     prev_cls = None
-    for i, sig in enumerate(all_sigs):
-        cls   = sig.classification
-        s     = _s(cls)
-        ts    = sig.tech_signal
+    for i, sig in enumerate(all_s):
+        cls = sig.classification
+        s   = sg(cls)
+        ts  = sig.tech_signal
 
         if cls != prev_cls:
-            rows += f"""
-            <tr>
-              <td colspan="12" style="padding:6px 12px;background:{s['bg']};
-                  border-top:2px solid {s['ring']};border-bottom:1px solid {s['ring']}30;">
-                <span style="color:{s['color']};font-size:11px;font-weight:700;
-                    letter-spacing:0.05em;">{s['emoji']} {cls}</span>
-              </td>
-            </tr>"""
+            rows += (
+                f'<tr><td colspan="12" style="padding:5px 10px;background:{s["bg"]};'
+                f'border-top:2px solid {s["bd"]};border-bottom:1px solid {s["bd"]}30;">'
+                f'<span style="color:{s["c"]};font-size:11px;font-weight:700;">'
+                f'{s["e"]} {cls}</span></td></tr>'
+            )
             prev_cls = cls
 
         pct = (ts.close - ts.prev_close) / ts.prev_close * 100 if ts.prev_close else 0.0
-        pct_c = C["green"] if pct >= 0 else C["red"]
+        pct_c = P["green"] if pct >= 0 else P["red"]
 
-        # Skor rengi
-        sc = (C["green2"] if sig.total_score >= 120 else
-              C["green"]  if sig.total_score >= 100 else
-              C["blue"]   if sig.total_score >= 80  else
-              C["sub"]    if sig.total_score >= 60  else C["red"])
+        if sig.total_score >= 120: sc = P["green2"]
+        elif sig.total_score >= 100: sc = P["green"]
+        elif sig.total_score >= 80: sc = P["blue"]
+        elif sig.total_score >= 60: sc = P["sub"]
+        else: sc = P["red"]
 
-        # MACD oku
-        macd_arrow = "▲" if ts.macd_hist > 0 else "▼"
-        macd_c = C["green"] if ts.macd_hist > 0 else C["red"]
-
-        # EMA trend
-        above_21  = ts.close > ts.ema21  > 0
-        above_50  = ts.close > ts.ema50  > 0
-        above_200 = ts.close > ts.ema200 > 0
-        ema_dots  = (
-            f'<span style="color:{C["green"] if above_21  else C["red"]};">●</span>'
-            f'<span style="color:{C["green"] if above_50  else C["red"]};">●</span>'
-            f'<span style="color:{C["green"] if above_200 else C["red"]};">●</span>'
+        ema_dots = (
+            f'<span style="color:{P["green"] if ts.close > ts.ema21 > 0 else P["red"]};">'
+            f'●</span><span style="color:{P["green"] if ts.close > ts.ema50 > 0 else P["red"]};">'
+            f'●</span><span style="color:{P["green"] if ts.close > ts.ema200 > 0 else P["red"]};">'
+            f'●</span>'
         )
 
-        # RSI rengi
-        rsi_c = (C["red"]    if ts.rsi > 70 else
-                 C["green"]  if ts.rsi < 30 else
-                 C["yellow"] if 40 <= ts.rsi <= 60 else C["sub"])
+        setup_icons = (
+            ('<span style="color:#f59e0b;font-size:10px;font-weight:700;">A</span> ' if ts.layers.layer3_setup.setup_a else '') +
+            ('<span style="color:#3b82f6;font-size:10px;font-weight:700;">B</span> ' if ts.layers.layer3_setup.setup_b else '') +
+            ('<span style="color:#8b5cf6;font-size:10px;font-weight:700;">C</span>'  if ts.layers.layer3_setup.setup_c else '')
+        ) or '<span style="color:#3d5a7a;">—</span>'
 
-        # ADX rengi
-        adx_c = C["green"] if ts.adx > 25 else C["sub"]
-
-        # Hacim
-        vol_c = C["cyan"] if ts.volume_ratio >= 1.5 else C["sub"]
-
-        # Setup ikonları
-        setups_active = sig.tech_signal.layers.layer3_setup.active_setups()
-        setup_icons = ""
-        if sig.tech_signal.layers.layer3_setup.setup_a:
-            setup_icons += '<span title="Setup A: EMA21 Pullback" style="color:#eab308;font-size:10px;">A</span> '
-        if sig.tech_signal.layers.layer3_setup.setup_b:
-            setup_icons += '<span title="Setup B: BB Squeeze" style="color:#3b82f6;font-size:10px;">B</span> '
-        if sig.tech_signal.layers.layer3_setup.setup_c:
-            setup_icons += '<span title="Setup C: RSI Diverjans" style="color:#8b5cf6;font-size:10px;">C</span> '
+        macd_c = P["green"] if ts.macd_hist > 0 else P["red"]
+        vol_c  = P["cyan"]  if ts.volume_ratio >= 1.5 else P["sub"]
+        row_bg = P["card"] if i % 2 == 0 else P["surface"]
 
         rows += f"""
-        <tr style="background:{'#0d1520' if i % 2 == 0 else C['surface']};
-             border-bottom:1px solid {C['border']};">
-          <td style="padding:7px 10px;font-weight:700;color:{C['text']};
-              font-size:13px;white-space:nowrap;">{sig.ticker}</td>
-          <td style="padding:7px 8px;color:{C['sub']};font-size:11px;
-              max-width:120px;overflow:hidden;white-space:nowrap;
-              text-overflow:ellipsis;">{sig.company_name[:18]}</td>
-          <td style="padding:7px 8px;text-align:right;">
-            <span style="color:{sc};font-weight:700;font-size:14px;">{sig.total_score:.0f}</span>
-          </td>
-          <td style="padding:7px 8px;text-align:right;color:{rsi_c};font-size:12px;
-              font-weight:600;">{ts.rsi:.0f}</td>
-          <td style="padding:7px 8px;text-align:right;color:{adx_c};font-size:12px;">
-            {ts.adx:.0f}</td>
-          <td style="padding:7px 8px;text-align:center;font-size:12px;">
-            <span style="color:{macd_c};">{macd_arrow}</span>
-            <span style="color:{macd_c};font-size:10px;">{ts.macd_hist:+.3f}</span>
-          </td>
-          <td style="padding:7px 8px;text-align:center;font-size:10px;
-              letter-spacing:2px;">{ema_dots}</td>
-          <td style="padding:7px 8px;text-align:right;color:{vol_c};font-size:12px;">
-            {ts.volume_ratio:.1f}x</td>
-          <td style="padding:7px 8px;text-align:right;color:{C['text']};
-              font-size:13px;font-weight:600;">{ts.close:.2f} ₺</td>
-          <td style="padding:7px 8px;text-align:right;color:{pct_c};font-size:12px;">
-            {"+" if pct >= 0 else ""}{pct:.1f}%</td>
-          <td style="padding:7px 8px;text-align:right;color:{C['sub']};font-size:12px;">
-            {ts.atr:.2f}</td>
-          <td style="padding:7px 10px;text-align:center;">{setup_icons or "—"}</td>
+        <tr style="background:{row_bg};border-bottom:1px solid {P['border']};">
+          {td(f'<b style="color:{P["text"]};font-size:13px;">{sig.ticker}</b>', "left", "7px 10px")}
+          {td(f'<span style="color:{P["sub"]};font-size:11px;">{sig.company_name[:17]}</span>', "left", "7px 8px")}
+          {td(f'<span style="color:{sc};font-weight:800;font-size:14px;">{sig.total_score:.0f}</span>')}
+          {td(f'<span style="color:{rsi_color(ts.rsi)};font-weight:600;">{ts.rsi:.0f}</span>')}
+          {td(f'<span style="color:{P["green"] if ts.adx > 25 else P["sub"]};">{ts.adx:.0f}</span>')}
+          {td(f'<span style="color:{macd_c};">{"▲" if ts.macd_hist > 0 else "▼"} {ts.macd_hist:+.3f}</span>')}
+          {td(ema_dots, "center")}
+          {td(f'<span style="color:{vol_c};">{ts.volume_ratio:.1f}x</span>')}
+          {td(f'<b style="color:{P["text"]};">{ts.close:.2f} ₺</b>')}
+          {td(f'<span style="color:{pct_c};">{"+" if pct >= 0 else ""}{pct:.1f}%</span>')}
+          {td(f'<span style="color:{P["muted"]};font-size:11px;">{ts.atr:.2f}</span>')}
+          {td(setup_icons, "center")}
         </tr>"""
 
-    th = lambda t: f'<th style="padding:8px;text-align:right;color:{C["muted"]};font-size:9px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;border-bottom:1px solid {C["border"]};">{t}</th>'
-    th_l = lambda t: f'<th style="padding:8px 10px;text-align:left;color:{C["muted"]};font-size:9px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;border-bottom:1px solid {C["border"]};">{t}</th>'
-    th_c = lambda t: f'<th style="padding:8px;text-align:center;color:{C["muted"]};font-size:9px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;border-bottom:1px solid {C["border"]};">{t}</th>'
-
     return f"""
-<div style="overflow-x:auto;border-radius:10px;border:1px solid {C['border']};">
-<table style="width:100%;border-collapse:collapse;min-width:680px;
-     background:{C['surface']};">
-  <tr style="background:{C['card']};">
-    {th_l("Hisse")}
-    {th_l("Şirket")}
-    {th("Skor")}
-    {th("RSI")}
-    {th("ADX")}
-    {th_c("MACD")}
-    {th_c("EMA 21·50·200")}
-    {th("Hacim")}
-    {th("Fiyat")}
-    {th("Değ%")}
-    {th("ATR")}
-    {th_c("Setup")}
+<div style="overflow-x:auto;border-radius:12px;border:1px solid {P['border']};">
+<table style="width:100%;border-collapse:collapse;min-width:700px;">
+  <tr style="background:{P['card']};">
+    {th("Hisse", "left")}{th("Şirket", "left")}
+    {th("Skor")}{th("RSI")}{th("ADX")}
+    {th("MACD ▲▼", "center")}{th("EMA 21·50·200", "center")}
+    {th("Hacim")}{th("Fiyat")}{th("Değ%")}
+    {th("ATR")}{th("Setup", "center")}
   </tr>
   {rows}
 </table>
@@ -536,125 +737,86 @@ def _full_table(ranked: Dict[str, List[CombinedSignal]]) -> str:
 # ─── Kılavuz ─────────────────────────────────────────────────────────────────
 
 def _guide() -> str:
-    rows = [
-        ("⭐ GÜÇLÜ AL", "140–170", "%1.5", "Tüm katmanlar geçti. Güçlü momentum + olumlu haber. Tam pozisyon aç.", "#4ade80", "#052e16"),
-        ("🟢 AL",       "120–139", "%1.0", "Setup + trigger aktif. Normal pozisyon. Stop takip et.",              "#22c55e", "#031f0e"),
-        ("🟡 ALIMA UYGUN","100–119","%0.5","Sinyal var ama eksik katmanlar. Yarım pozisyon, sıkı stop.",          "#eab308", "#1c1400"),
-        ("🔵 İZLE",     "80–99",   "—",   "Henüz olgunlaşmamış. Alerte al, kırılım bekleniyor olabilir.",      "#3b82f6", "#0c1a35"),
-        ("⚪ NÖTR",     "60–79",   "—",   "Yön belirsiz. Bekle.",                                              "#64748b", "#0f172a"),
-        ("🔴 ZAYIF",    "<60",     "—",   "Setup yok. Trend aleyhte.",                                         "#ef4444", "#1c0000"),
-        ("⛔ VETOLU",   "—",       "—",   "Haber / piyasa veto kuralı devrede. Dokunma.",                       "#dc2626", "#1a0000"),
+    rows_data = [
+        ("⭐ GÜÇLÜ AL",    "140–170", "%1.5", "Tüm katman ve setup'lar geçti. Tam pozisyon.", P["green2"], "#022c22"),
+        ("🟢 AL",          "120–139", "%1.0", "Güçlü setup + trigger aktif. Normal pozisyon.",P["green"],  "#011f17"),
+        ("🟡 ALIMA UYGUN", "100–119", "%0.5", "Sinyal var, eksik katman. Yarım pozisyon.",    P["yellow"], "#1c1000"),
+        ("🔵 İZLE",        "80–99",   "—",    "Olgunlaşmamış, kırılım bekleniyor.",           P["blue"],   "#0a1628"),
+        ("⚪ NÖTR",        "60–79",   "—",    "Yön belirsiz. Bekle.",                         P["sub"],    "#0d1526"),
+        ("🔴 ZAYIF",       "<60",     "—",    "Setup yok. Trend aleyhte.",                    P["red"],    "#1a0505"),
+        ("⛔ VETOLU",      "—",       "—",    "Haber veya piyasa veto kuralı devrede.",       "#dc2626",   "#150303"),
     ]
-    trs = ""
-    for lbl, skor, risk, desc, col, bg in rows:
-        trs += f"""
-        <tr style="background:{bg};">
-          <td style="padding:7px 12px;color:{col};font-weight:600;font-size:13px;
-              border-bottom:1px solid {C['border']};white-space:nowrap;">{lbl}</td>
-          <td style="padding:7px 12px;color:{C['text']};font-size:12px;
-              border-bottom:1px solid {C['border']};text-align:center;">{skor}</td>
-          <td style="padding:7px 12px;color:{col};font-size:12px;font-weight:700;
-              border-bottom:1px solid {C['border']};text-align:center;">{risk}</td>
-          <td style="padding:7px 12px;color:{C['sub']};font-size:12px;
-              border-bottom:1px solid {C['border']};">{desc}</td>
-        </tr>"""
+    trs = "".join(f"""
+    <tr style="background:{bg};">
+      <td style="padding:7px 12px;color:{c};font-weight:700;font-size:13px;
+          border-bottom:1px solid {P['border']};">{lbl}</td>
+      <td style="padding:7px 12px;color:{P['text']};font-size:12px;
+          border-bottom:1px solid {P['border']};text-align:center;">{skor}</td>
+      <td style="padding:7px 12px;color:{c};font-size:12px;font-weight:700;
+          border-bottom:1px solid {P['border']};text-align:center;">{risk}</td>
+      <td style="padding:7px 12px;color:{P['sub']};font-size:12px;
+          border-bottom:1px solid {P['border']};">{desc}</td>
+    </tr>"""
+    for lbl, skor, risk, desc, c, bg in rows_data)
 
-    param_grid = f"""
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
-         gap:12px;margin-top:14px;">
-      <div style="background:{C['card']};border:1px solid {C['border']};
-           border-radius:8px;padding:12px;">
-        <div style="color:{C['green']};font-size:10px;font-weight:700;
-             letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">
-          Teknik Skor (0–100)</div>
-        <div style="color:{C['sub']};font-size:11px;line-height:1.8;">
-          Setup A — EMA21 Pullback<br>
-          Setup B — BB Squeeze Kırılımı<br>
-          Setup C — RSI Bullish Diverjans<br>
-          RSI 40–60 momentum bölgesi<br>
-          EMA hizalaması (9&gt;21&gt;50&gt;200)<br>
-          ADX &gt; 25 güçlü trend<br>
-          Hacim 1.5x+ onayı
-        </div>
-      </div>
-      <div style="background:{C['card']};border:1px solid {C['border']};
-           border-radius:8px;padding:12px;">
-        <div style="color:{C['blue']};font-size:10px;font-weight:700;
-             letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">
-          Haber Skoru (−50 / +50)</div>
-        <div style="color:{C['sub']};font-size:11px;line-height:1.8;">
-          <span style="color:{C['green']};">+25</span> Bilanço pozitif sürpriz<br>
-          <span style="color:{C['green']};">+20</span> Yeni sözleşme / ihale<br>
-          <span style="color:{C['green']};">+15</span> Geri alım programı<br>
-          <span style="color:{C['red']};"> −30</span> SPK soruşturması<br>
-          <span style="color:{C['red']};"> −25</span> Bilanço negatif sürpriz<br>
-          KAP×1.0 · BloombergHT×0.8 · Diğer×0.5
-        </div>
-      </div>
-      <div style="background:{C['card']};border:1px solid {C['border']};
-           border-radius:8px;padding:12px;">
-        <div style="color:{C['orange']};font-size:10px;font-weight:700;
-             letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">
-          Likidite Skoru (0–20)</div>
-        <div style="color:{C['sub']};font-size:11px;line-height:1.8;">
-          +10 Günlük hacim &gt;250M TL<br>
-          +5  Günlük hacim &gt;100M TL<br>
-          +10 Piyasa değeri &gt;5B TL<br><br>
-          <b style="color:{C['text']};">Toplam = Teknik + Haber + Likidite</b><br>
-          <span style="color:{C['muted']};">Aralık: −50 ile 170 puan</span>
-        </div>
-      </div>
-      <div style="background:{C['card']};border:1px solid {C['border']};
-           border-radius:8px;padding:12px;">
-        <div style="color:{C['purple']};font-size:10px;font-weight:700;
-             letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">
-          ATR Risk Formülü</div>
-        <div style="color:{C['sub']};font-size:11px;line-height:1.8;">
-          Giriş  = Kapanış × 1.005<br>
-          Stop   = Giriş − 2 × ATR(14)<br>
-          T1     = Giriş + 2 × ATR(14) → ½ çık<br>
-          T2     = Giriş + 4 × ATR(14) → kalan çık<br>
-          Stop'u T1'de girişe çek<br>
-          Portföy: 100.000 ₺ baz
-        </div>
-      </div>
+    params = f"""
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));
+         gap:10px;margin-top:12px;">
+      {"".join([
+        f'<div style="background:{P["card"]};border:1px solid {P["border"]};'
+        f'border-radius:8px;padding:12px;">'
+        f'<div style="color:{hdr_c};font-size:9px;font-weight:700;letter-spacing:0.1em;'
+        f'text-transform:uppercase;margin-bottom:8px;">{title}</div>'
+        f'<div style="color:{P["sub"]};font-size:11px;line-height:1.8;">{body}</div>'
+        f'</div>'
+        for title, hdr_c, body in [
+          ("Teknik Skor 0–100", P["green"],
+           "Setup A: EMA21 Pullback<br>Setup B: BB Squeeze Kırılımı<br>Setup C: RSI Diverjans<br>"
+           "ADX > 25 güçlü trend<br>Hacim 1.5x+ tetikleyici<br>EMA hizalaması 9&gt;21&gt;50"),
+          ("Haber Skoru −50/+50", P["blue"],
+           f'<span style="color:{P["green"]};">+25</span> Bilanço pozitif sürpriz<br>'
+           f'<span style="color:{P["green"]};">+20</span> Yeni sözleşme/ihale<br>'
+           f'<span style="color:{P["green"]};">+15</span> Geri alım / yabancı alım<br>'
+           f'<span style="color:{P["red"]};">  −30</span> SPK soruşturması<br>'
+           f'<span style="color:{P["red"]};">  −25</span> Bilanço neg. sürpriz<br>'
+           f'KAP×1.0 · BB×0.8 · Diğer×0.5'),
+          ("Likidite Skoru 0–20", P["orange"],
+           "+10 Hacim &gt;250M TL/gün<br>+5 Hacim &gt;100M TL/gün<br>+10 Piyasa değeri &gt;5B TL<br><br>"
+           f'<b style="color:{P["text"]};">Toplam = Teknik + Haber + Likidite</b>'),
+          ("ATR Risk Formülü", P["purple"],
+           "Giriş = Kapanış × 1.005<br>Stop = Giriş − 2×ATR<br>T1 = Giriş + 2×ATR → ½ çık<br>"
+           "T2 = Giriş + 4×ATR → kalan çık<br>Stop'u T1'de girişe çek<br>Baz portföy: 100.000 ₺"),
+        ]
+      ])}
     </div>"""
 
     return f"""
-<div style="background:{C['surface']};border:1px solid {C['border']};
-     border-radius:10px;overflow:hidden;">
-  <div style="padding:14px 16px;border-bottom:1px solid {C['border']};">
-    <span style="color:{C['text']};font-size:13px;font-weight:700;">
-      📖 Sinyal Kılavuzu</span>
+<div style="background:{P['surface']};border:1px solid {P['border']};
+     border-radius:12px;overflow:hidden;">
+  <div style="padding:12px 16px;border-bottom:1px solid {P['border']};">
+    <span style="color:{P['text']};font-size:14px;font-weight:700;">📖 Sinyal Kılavuzu & Parametreler</span>
   </div>
   <table style="width:100%;border-collapse:collapse;">
-    <tr style="background:{C['card']};">
-      <th style="padding:7px 12px;text-align:left;color:{C['muted']};font-size:9px;
-          letter-spacing:0.1em;text-transform:uppercase;border-bottom:1px solid {C['border']};">Sinyal</th>
-      <th style="padding:7px 12px;text-align:center;color:{C['muted']};font-size:9px;
-          letter-spacing:0.1em;text-transform:uppercase;border-bottom:1px solid {C['border']};">Skor</th>
-      <th style="padding:7px 12px;text-align:center;color:{C['muted']};font-size:9px;
-          letter-spacing:0.1em;text-transform:uppercase;border-bottom:1px solid {C['border']};">Risk %</th>
-      <th style="padding:7px 12px;text-align:left;color:{C['muted']};font-size:9px;
-          letter-spacing:0.1em;text-transform:uppercase;border-bottom:1px solid {C['border']};">Açıklama</th>
+    <tr style="background:{P['card']};">
+      {th("Sinyal", "left")}{th("Skor","center")}{th("Risk %","center")}{th("Açıklama","left")}
     </tr>
     {trs}
   </table>
-  <div style="padding:14px 16px;">
-    {param_grid}
-  </div>
+  <div style="padding:14px 16px;">{params}</div>
 </div>"""
 
 
-# ─── Ana HTML ─────────────────────────────────────────────────────────────────
+# ─── Ana build fonksiyonu ─────────────────────────────────────────────────────
 
 def build_html_email(
     signals: List[CombinedSignal],
     market_regime: dict,
     usdtry: Optional[float],
     news_scores_map: Dict[str, float],
-    weekly_perf: Optional[dict],
-    is_monday: bool,
+    all_classified_news: Optional[List[ClassifiedNews]] = None,
+    sentiment_by_ticker: Optional[Dict[str, Any]] = None,
+    weekly_perf: Optional[dict] = None,
+    is_monday: bool = False,
 ) -> str:
     now    = now_istanbul()
     ranked = rank_signals(signals)
@@ -663,103 +825,53 @@ def build_html_email(
     buy    = ranked["AL"]
     suit   = ranked["ALIMA UYGUN"]
     watch  = ranked["İZLE"]
-    neutral= ranked["NÖTR"]
-    weak   = ranked["ZAYIF"]
-    vetoed = ranked["VETOLU"]
-
-    # Kart gösterilecek hisseler: GÜÇLÜ AL + AL + ALIMA UYGUN + İZLE
     card_sigs = strong + buy + suit + watch
-
-    xu100  = market_regime.get("xu100_close", 0)
-    ema50  = market_regime.get("ema50_val", 0)
-    mok    = market_regime.get("above_ema50", False)
-    usd    = f"{usdtry:.4f}" if usdtry else "—"
-
-    # Piyasa banner
-    if mok:
-        regime_html = (
-            f'<div style="background:#052e16;border:1px solid #166534;'
-            f'border-radius:8px;padding:10px 16px;margin-bottom:16px;'
-            f'display:flex;align-items:center;gap:10px;">'
-            f'<span style="font-size:18px;">📈</span>'
-            f'<div><b style="color:{C["green"]};">Piyasa Güçlü</b>'
-            f'<span style="color:{C["sub"]};font-size:12px;margin-left:8px;">'
-            f'XU100 {xu100:,.0f} · EMA50 {ema50:,.0f} ({((xu100/ema50-1)*100):+.1f}%)'
-            f'</span></div></div>'
-        )
-    else:
-        regime_html = (
-            f'<div style="background:#1c0000;border:1px solid #7f1d1d;'
-            f'border-radius:8px;padding:10px 16px;margin-bottom:16px;">'
-            f'<b style="color:{C["red"]};">⚠ Piyasa Zayıf — XU100 &lt; EMA50</b>'
-            f'<span style="color:{C["sub"]};font-size:12px;margin-left:8px;">'
-            f'XU100 {xu100:,.0f} · EMA50 {ema50:,.0f}</span><br>'
-            f'<span style="color:{C["sub"]};font-size:12px;">'
-            f'Aktif sinyallerde pozisyon yarıya indir. Stop seviyelerine kesinlikle uy.</span>'
-            f'</div>'
-        )
-
-    # Özet sayaçlar
-    def _cnt(n: int, label: str, color: str, bg: str) -> str:
-        return (
-            f'<div style="background:{bg};border-radius:8px;padding:12px 14px;'
-            f'text-align:center;min-width:72px;">'
-            f'<div style="color:{C["muted"]};font-size:9px;letter-spacing:0.1em;'
-            f'text-transform:uppercase;">{label}</div>'
-            f'<div style="color:{color};font-size:24px;font-weight:800;'
-            f'letter-spacing:-1px;line-height:1.1;">{n}</div>'
-            f'</div>'
-        )
-
-    counts_html = (
-        f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">'
-        f'{_cnt(len(strong), "⭐ Güçlü Al", C["green2"], "#052e16")}'
-        f'{_cnt(len(buy),    "🟢 Al",       C["green"],  "#031f0e")}'
-        f'{_cnt(len(suit),   "🟡 Uygun",    C["yellow"], "#1c1400")}'
-        f'{_cnt(len(watch),  "🔵 İzle",     C["blue"],   "#0c1a35")}'
-        f'{_cnt(len(neutral),"⚪ Nötr",     C["sub"],    "#0f172a")}'
-        f'{_cnt(len(weak),   "🔴 Zayıf",    C["red"],    "#1c0000")}'
-        f'{_cnt(len(vetoed), "⛔ Vetolu",   "#dc2626",   "#1a0000")}'
-        f'<div style="flex:1;min-width:120px;background:{C["card"]};border:1px solid {C["border"]};'
-        f'border-radius:8px;padding:12px 14px;">'
-        f'<div style="color:{C["muted"]};font-size:9px;letter-spacing:0.1em;'
-        f'text-transform:uppercase;">USD/TRY</div>'
-        f'<div style="color:{C["text"]};font-size:20px;font-weight:700;">{usd}</div>'
-        f'</div>'
-        f'</div>'
-    )
 
     # Trade kartları
     if card_sigs:
         cards_html = "".join(_trade_card(s, news_scores_map) for s in card_sigs)
     else:
         cards_html = (
-            f'<div style="background:{C["surface"]};border:1px solid {C["border"]};'
-            f'border-radius:10px;padding:24px;text-align:center;'
-            f'color:{C["muted"]};font-size:14px;margin-bottom:16px;">'
-            f'Bugün aksiyon alınabilir setup yok. Piyasayı izlemeye devam et.'
+            f'<div style="background:{P["surface"]};border:1px solid {P["border"]};'
+            f'border-radius:10px;padding:28px;text-align:center;'
+            f'color:{P["muted"]};font-size:14px;margin-bottom:16px;">'
+            f'Bugün aksiyon alınabilir setup yok. Tam tarama tablosuna bak ↓'
             f'</div>'
         )
 
-    # Performans
+    # Haber akışı
+    news_feed_html = ""
+    if all_classified_news:
+        news_feed_html = _news_feed(all_classified_news, news_scores_map, sentiment_by_ticker or {})
+
+    # Performans (Pazartesi)
     perf_html = ""
     if is_monday and weekly_perf:
-        p = weekly_perf
+        p  = weekly_perf
         wr = p.get("win_rate", 0)
         ar = p.get("avg_return", 0)
+        def stat2(v, lbl, c):
+            return (f'<div style="text-align:center;padding:0 10px;">'
+                    f'<div style="color:{P["muted"]};font-size:9px;letter-spacing:0.1em;'
+                    f'text-transform:uppercase;">{lbl}</div>'
+                    f'<div style="color:{c};font-size:22px;font-weight:800;">{v}</div></div>')
         perf_html = (
-            f'{_divider("Geçen Hafta Performansı")}'
-            f'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;">'
-            f'{_kpi("Toplam", str(p.get("total_signals", 0)))}'
-            f'{_kpi("T1 İsabet", str(p.get("t1_hits", 0)), C["green"])}'
-            f'{_kpi("T2 İsabet", str(p.get("t2_hits", 0)), C["green2"])}'
-            f'{_kpi("Stop", str(p.get("stop_hits", 0)), C["red"])}'
-            f'{_kpi("Kazanma %", f"%{wr:.1f}", C["green"] if wr >= 50 else C["red"])}'
-            f'{_kpi("Ort. Getiri", f"{ar:+.2f}%", C["green"] if ar >= 0 else C["red"])}'
-            f'</div>'
+            sep("Geçen Hafta Performansı") +
+            f'<div style="background:{P["surface"]};border:1px solid {P["border"]};'
+            f'border-radius:10px;padding:16px;display:flex;flex-wrap:wrap;'
+            f'justify-content:center;gap:8px;">'
+            + stat2(p.get("total_signals",0), "Toplam", P["text"])
+            + stat2(p.get("t1_hits",0), "T1 İsabet", P["green"])
+            + stat2(p.get("t2_hits",0), "T2 İsabet", P["green2"])
+            + stat2(p.get("stop_hits",0), "Stop", P["red"])
+            + stat2(f"%{wr:.1f}", "Kazanma", P["green"] if wr >= 50 else P["red"])
+            + stat2(f"{ar:+.2f}%", "Ort. Getiri", P["green"] if ar >= 0 else P["red"])
+            + '</div>'
         )
 
-    html = f"""<!DOCTYPE html>
+    n_cards = len(card_sigs)
+
+    return f"""<!DOCTYPE html>
 <html lang="tr">
 <head>
 <meta charset="UTF-8">
@@ -767,58 +879,38 @@ def build_html_email(
 <title>BIST30 · {now.strftime('%d.%m.%Y')}</title>
 <style>
   *{{box-sizing:border-box;margin:0;padding:0;}}
-  body{{background:{C['bg']};font-family:-apple-system,BlinkMacSystemFont,
-       'Segoe UI',system-ui,sans-serif;color:{C['text']};}}
-  a{{color:{C['blue']};text-decoration:none;}}
+  body{{background:{P['bg']};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
+       Roboto,system-ui,sans-serif;color:{P['text']};-webkit-font-smoothing:antialiased;}}
+  a{{color:{P['blue2']};text-decoration:none;}}
   a:hover{{text-decoration:underline;}}
-  td{{vertical-align:top;}}
 </style>
 </head>
 <body>
-<div style="max-width:900px;margin:0 auto;padding:16px 12px 32px;">
+<div style="max-width:920px;margin:0 auto;padding:16px 12px 40px;">
 
-  <!-- BAŞLIK -->
-  <div style="text-align:center;padding:20px 0 18px;">
-    <div style="color:{C['muted']};font-size:10px;letter-spacing:0.15em;
-         text-transform:uppercase;margin-bottom:6px;">
-      {now.strftime('%d %B %Y · %A · %H:%M')} İstanbul
-    </div>
-    <h1 style="font-size:20px;font-weight:800;color:{C['text']};letter-spacing:-0.5px;">
-      BIST30 · 5-Günlük Swing Taraması
-    </h1>
-    <div style="color:{C['muted']};font-size:12px;margin-top:4px;">
-      {len(signals)} hisse analiz edildi · EMA / RSI / MACD / BB / ADX / Stochastic / Hacim
-    </div>
-  </div>
+  {_hero(now, signals, ranked, market_regime, usdtry)}
 
-  <!-- PİYASA -->
-  {regime_html}
-
-  <!-- SAYAÇLAR -->
-  {counts_html}
-
-  <!-- TRADE KARTLARI -->
-  {_divider(f"Detaylı Trade Planları · {len(card_sigs)} Hisse")}
+  {sep(f"Trade Planları · {n_cards} Hisse")}
   {cards_html}
 
-  <!-- TAM TARAMA -->
-  {_divider(f"BIST30 Tam Tarama · {len(signals)} Hisse")}
+  {sep(f"Piyasa Haber Akışı")}
+  {news_feed_html if news_feed_html else f'<div style="color:{P["muted"]};text-align:center;padding:16px;">Haber çekilemedi.</div>'}
+
+  {sep(f"BIST30 Tam Tarama · {len(signals)} Hisse")}
   {_full_table(ranked)}
 
-  <!-- PERFORMANS -->
   {perf_html}
 
-  <!-- KILAVUZ -->
-  {_divider("Sinyal Kılavuzu & Parametreler")}
+  {sep("Sinyal Kılavuzu")}
   {_guide()}
 
-  <!-- FOOTER -->
-  <div style="margin-top:28px;padding-top:16px;border-top:1px solid {C['border']};
+  <div style="margin-top:28px;padding-top:16px;border-top:1px solid {P['border']};
        text-align:center;">
-    <p style="color:{C['muted']};font-size:10px;line-height:1.8;">
+    <p style="color:{P['muted']};font-size:10px;line-height:1.9;">
       ⚠ Bu rapor <b>yatırım tavsiyesi değildir</b>. Yalnızca eğitim ve araştırma amaçlıdır.<br>
-      Geçmiş performans gelecek getirileri garantilemez. Her sinyali kendi analizinizle doğrulayın.<br>
-      Sonraki tarama: <b>Yarın 09:00 TR</b> · BIST30-Signal v3.0
+      Her sinyali kendi analizinizle doğrulayın. Stop seviyelerine kesinlikle uyun.<br>
+      Sonraki tarama: <b style="color:{P['sub']};">Yarın 09:00 İstanbul (iş günü ise)</b>
+      · BIST30-Signal v4.0
     </p>
   </div>
 
@@ -826,10 +918,8 @@ def build_html_email(
 </body>
 </html>"""
 
-    return html
 
-
-# ─── Resend Gönderme ──────────────────────────────────────────────────────────
+# ─── Resend gönderme ──────────────────────────────────────────────────────────
 
 def send_email(
     html_body: str,
@@ -840,15 +930,10 @@ def send_email(
 ) -> bool:
     cfg = MAIL_CONFIG
     resend.api_key = api_key
-
     for attempt in range(1, cfg["retry_count"] + 1):
         try:
-            resend.Emails.send({
-                "from": from_addr,
-                "to": [to_addr],
-                "subject": subject,
-                "html": html_body,
-            })
+            resend.Emails.send({"from": from_addr, "to": [to_addr],
+                                "subject": subject, "html": html_body})
             logger.info("Mail gönderildi → %s", to_addr)
             return True
         except Exception as exc:

@@ -167,7 +167,14 @@ def process_news(
         len(ticker_news_scores), len(all_items),
     )
 
-    return ticker_news_scores, news_scores_map, ticker_classified, ticker_ai_commentary
+    return (
+        ticker_news_scores,
+        news_scores_map,
+        ticker_classified,
+        ticker_ai_commentary,
+        classified_all,          # tüm sınıflandırılmış haberler (mail haber akışı için)
+        sentiment_by_ticker,     # AI sentiment sonuçları
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +224,8 @@ def run_scan() -> Optional[tuple]:
         news_scores_map,
         ticker_classified,
         ticker_ai_commentary,
+        all_classified_news,
+        sentiment_by_ticker,
     ) = process_news(env)
 
     # Teknik analiz ve skorlama — her hisse
@@ -292,7 +301,7 @@ def run_scan() -> Optional[tuple]:
         )
 
     logger.info("Toplam %d sinyal üretildi", len(signals))
-    return signals, market_data, news_scores_map
+    return signals, market_data, news_scores_map, all_classified_news, sentiment_by_ticker
 
 
 # ---------------------------------------------------------------------------
@@ -303,12 +312,13 @@ def send_signal_email(
     signals: List[CombinedSignal],
     market_data,
     news_scores_map: Dict[str, float],
+    all_classified_news,
+    sentiment_by_ticker,
     env: dict,
 ) -> None:
     now = now_istanbul()
     is_monday = now.weekday() == 0
 
-    # Haftalık performans (Pazartesi ise hesapla)
     weekly_perf = None
     if is_monday:
         stats = compute_weekly_stats()
@@ -322,6 +332,8 @@ def send_signal_email(
         market_regime=market_regime,
         usdtry=market_data.usdtry,
         news_scores_map=news_scores_map,
+        all_classified_news=all_classified_news,
+        sentiment_by_ticker=sentiment_by_ticker,
         weekly_perf=weekly_perf,
         is_monday=is_monday,
     )
@@ -372,11 +384,12 @@ def main() -> None:
             logger.error("Tarama başarısız")
             sys.exit(1)
 
-        signals, market_data, news_scores_map = result
+        signals, market_data, news_scores_map, all_classified_news, sentiment_by_ticker = result
         env = load_env()
 
         if env["RESEND_API_KEY"] and env["MAIL_TO"]:
-            send_signal_email(signals, market_data, news_scores_map, env)
+            send_signal_email(signals, market_data, news_scores_map,
+                              all_classified_news, sentiment_by_ticker, env)
         else:
             logger.warning("Mail bilgileri eksik, sadece konsol çıktısı")
             ranked = rank_signals(signals)
