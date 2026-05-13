@@ -1,0 +1,92 @@
+name: BIST30 Günlük Sinyal Taraması
+
+on:
+  schedule:
+    # Her hafta içi 06:00 UTC = 09:00 Türkiye (Yaz Saati: UTC+3)
+    # Kış Saati (UTC+2) için 07:00 UTC kullanın: '0 7 * * 1-5'
+    - cron: '0 6 * * 1-5'
+
+  # Elle tetikleme (isteğe bağlı parametreler ile)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Tatil günü olsa bile çalıştır'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+  TZ: 'Europe/Istanbul'
+
+jobs:
+  scan:
+    name: Sinyal Taraması
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── Kaynak Kodunu Al ───────────────────────────────────────────────
+      - name: Kodu çek
+        uses: actions/checkout@v4
+
+      # ── Python Kur ────────────────────────────────────────────────────
+      - name: Python ${{ env.PYTHON_VERSION }} kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      # ── Bağımlılıklar ─────────────────────────────────────────────────
+      - name: Bağımlılıkları yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── SQLite Önbelleği (artifacts üzerinden kalıcı hale getirilir) ──
+      - name: DB önbelleğini geri yükle
+        uses: actions/cache@v4
+        with:
+          path: history.db
+          key: bist30-db-${{ github.run_number }}
+          restore-keys: |
+            bist30-db-
+
+      # ── Ana Taramayı Çalıştır ─────────────────────────────────────────
+      - name: Sinyal taraması çalıştır
+        env:
+          RESEND_API_KEY:      ${{ secrets.RESEND_API_KEY }}
+          MAIL_FROM:           ${{ secrets.MAIL_FROM }}
+          MAIL_TO:             ${{ secrets.MAIL_TO }}
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            python main.py --force
+          else
+            python main.py
+          fi
+
+      # ── Logları Artifact Olarak Kaydet ────────────────────────────────
+      - name: Log dosyalarını yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bist30-logs-${{ github.run_number }}
+          path: |
+            bist30_signal.log
+            report_*.html
+          retention-days: 14
+
+      # ── Hata Bildirimi ────────────────────────────────────────────────
+      - name: Hata durumunda bildirim
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `BIST30 Tarama Hatası — ${new Date().toLocaleDateString('tr-TR')}`,
+              body: `Workflow çalışması başarısız oldu.\n\nRun: ${context.runId}\nBranch: ${context.ref}`,
+              labels: ['bug', 'automated']
+            })

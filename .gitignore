@@ -1,0 +1,39 @@
+# Ortam & Gizli
+.env
+*.env.local
+
+# Veritabanı (production verisi)
+history.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Log dosyaları
+*.log
+bist30_signal.log
+
+# Raporlar (geçici)
+report_*.html
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/

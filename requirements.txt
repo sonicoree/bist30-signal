@@ -1,0 +1,32 @@
+# BIST30 Swing Trading Sinyal Sistemi — Bağımlılıklar
+# Python 3.11+ gerekli (pandas-ta için)
+# Kurulum: pip install -r requirements.txt
+
+# Veri yükleme
+yfinance>=0.2.36
+pandas>=2.1.0
+numpy>=1.26.0
+
+# Teknik analiz
+pandas-ta>=0.3.14b
+
+# Haber toplama
+feedparser>=6.0.11
+requests>=2.31.0
+beautifulsoup4>=4.12.3
+lxml>=5.0.0
+
+# AI Sentiment
+anthropic>=0.34.0
+
+# Veritabanı (stdlib, ekstra paket gerekmez)
+# sqlite3 — stdlib
+
+# Timezone
+pytz>=2024.1
+
+# Mail gönderimi
+resend>=2.0.0
+
+# Yardımcı
+python-dotenv>=1.0.0
